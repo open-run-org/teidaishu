@@ -18,6 +18,7 @@ ARG GO_VERSION=1.25.5
 ARG JULIA_VERSION=1.12.2
 ARG ZOLA_VERSION=0.21.0
 ARG UV_VERSION=0.9.17
+ARG DUCKDB_VERSION=1.4.3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash \
@@ -75,6 +76,10 @@ RUN set -e; \
   rm -f /tmp/zola.tgz
 
 RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_UNMANAGED_INSTALL="/usr/local/bin" sh
+
+RUN curl -fsSL https://install.duckdb.org | DUCKDB_VERSION=${DUCKDB_VERSION} sh
+RUN install -m 0755 /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
+RUN duckdb --version
 
 WORKDIR /workspace
 RUN git config --system --add safe.directory /workspace
