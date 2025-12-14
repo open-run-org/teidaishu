@@ -1,0 +1,11 @@
+services:
+  open-run-teidaishu-dev:
+    image: ghcr.io/open-run-org/teidaishu-dev
+    container_name: open-run-teidaishu-dev
+    working_dir: /workspace
+    volumes:
+      - "..:/workspace"
+    command: >
+      bash -lc "
+        exec sleep infinity
+      "
