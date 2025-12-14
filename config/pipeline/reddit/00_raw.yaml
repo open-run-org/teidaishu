@@ -1,19 +1,10 @@
-version: 1
+raw_root: data/reddit/00_raw
+apps_root: apps/reddit/harvest
 
-paths:
-  raw_root: data/reddit/00_raw
-  apps_root: apps/reddit/harvest
+lookback_days: 7
+page_limit: 100
+sleep_sec: 0
 
-reddit:
-  days: 4
-  limit: 65536
-  subreddits:
-    - BakaNewsJP
-    - lowlevelaware
-
-runtime:
-  sleep_sec: 0
-
-logging:
-  level: info
-  progress: true
+subreddits:
+  - BakaNewsJP
+  - lowlevelaware

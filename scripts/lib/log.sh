@@ -1,30 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-_log_rank() {
-  case "${1:-info}" in
-    error) echo 0 ;;
-    warn) echo 1 ;;
-    info) echo 2 ;;
-    debug) echo 3 ;;
-    *) echo 2 ;;
-  esac
+log_info() { printf "[INFO] %s\n" "$*" >&2; }
+log_warn() { printf "[WARN] %s\n" "$*" >&2; }
+log_error() { printf "[ERROR] %s\n" "$*" >&2; }
+
+task_start() {
+  TASK_NAME="$1"
+  TASK_T0_EPOCH="$(date -u +%s)"
+  TASK_T0_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  printf "[TIME] %s start=%s\n" "$TASK_NAME" "$TASK_T0_ISO" >&2
 }
 
-log_ts() {
-  date -u +"%Y-%m-%dT%H:%M:%SZ"
+task_end() {
+  local name="$1"
+  local t1_epoch
+  local t1_iso
+  local dt
+  t1_epoch="$(date -u +%s)"
+  t1_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  dt=$((t1_epoch - TASK_T0_EPOCH))
+  printf "[TIME] %s end=%s elapsed=%ss\n" "$name" "$t1_iso" "$dt" >&2
 }
-
-log_emit() {
-  local level="$1"; shift
-  local msg="$*"
-  local cfg_level="${LOG_LEVEL:-info}"
-  if [ "$(_log_rank "$level")" -le "$(_log_rank "$cfg_level")" ]; then
-    printf "[%s] [%s] %s\n" "$(log_ts)" "$level" "$msg" >&2
-  fi
-}
-
-log_info(){ log_emit info "$*"; }
-log_warn(){ log_emit warn "$*"; }
-log_error(){ log_emit error "$*"; }
-log_debug(){ log_emit debug "$*"; }
