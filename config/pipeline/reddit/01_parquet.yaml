@@ -1,7 +1,7 @@
 raw_root: data/reddit/00_raw
 parquet_root: data/reddit/01_parquet
 
-lookback_days: 14
+lookback_days: 0
 
 compression: zstd
 

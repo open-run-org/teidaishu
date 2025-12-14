@@ -2,178 +2,163 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
+source "$ROOT_DIR/scripts/lib/yaml.sh"
+source "$ROOT_DIR/scripts/lib/log.sh"
+
 CFG="${CFG:-$ROOT_DIR/config/pipeline/reddit/01_parquet.yaml}"
 
-log() { printf '[%s] %s\n' "$1" "$2" >&2; }
-utc_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
-sec_now() { date -u +%s; }
-
-cfg_scalar() {
-  local key="$1"
-  local line
-  line="$(grep -E "^[[:space:]]*${key}:" "$CFG" | head -n 1 || true)"
-  [[ -z "$line" ]] && return 0
-  printf '%s' "$line" \
-    | sed -E "s/^[[:space:]]*${key}:[[:space:]]*//" \
-    | sed -E 's/[[:space:]]*#.*$//' \
-    | sed -E 's/[[:space:]]*$//'
-}
-
-cfg_list() {
-  local key="$1"
-  awk -v k="$key" '
-    BEGIN{inside=0}
-    $0 ~ ("^" k ":[[:space:]]*$") { inside=1; next }
-    inside && $0 ~ "^[[:space:]]*-[[:space:]]+" {
-      sub(/^[[:space:]]*-[[:space:]]+/, "", $0)
-      sub(/[[:space:]]*#.*$/, "", $0)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
-      if ($0 != "") print
-      next
-    }
-    inside && $0 ~ "^[^[:space:]]" { inside=0 }
-  ' "$CFG"
-}
-
+need_bin() { command -v "$1" >/dev/null 2>&1 || { log_error "missing binary: $1"; exit 1; }; }
 esc_sql() { printf "%s" "$1" | sed "s/'/''/g"; }
 
-main() {
-  command -v duckdb >/dev/null 2>&1 || { log ERROR "missing binary: duckdb"; exit 1; }
-  [[ -f "$CFG" ]] || { log ERROR "config not found: $CFG"; exit 1; }
-
-  local RAW_ROOT PARQUET_ROOT COMPRESSION
-  RAW_ROOT="$(cfg_scalar raw_root)"
-  PARQUET_ROOT="$(cfg_scalar parquet_root)"
-  COMPRESSION="$(cfg_scalar compression)"
-  RAW_ROOT="${RAW_ROOT:-data/reddit/00_raw}"
-  PARQUET_ROOT="${PARQUET_ROOT:-data/reddit/01_parquet}"
-  COMPRESSION="${COMPRESSION:-zstd}"
-
-  local lookback_days cutoff_key cutoff_iso
-  lookback_days="$(cfg_scalar lookback_days || true)"
-  lookback_days="${LOOKBACK_DAYS:-$lookback_days}"
-  lookback_days="${lookback_days:-0}"
-  [[ "$lookback_days" =~ ^[0-9]+$ ]] || { log ERROR "bad lookback_days=$lookback_days"; exit 1; }
-
-  if [[ "$lookback_days" -le 0 ]]; then
-    cutoff_key=""
-    cutoff_iso="1970-01-01T00:00:00Z"
-  else
-    cutoff_key="$(date -u -d "-${lookback_days} days" +%y%m%d%H%M%S)"
-    cutoff_iso="$(date -u -d "-${lookback_days} days" +%Y-%m-%dT%H:%M:%SZ)"
-  fi
-
-  mapfile -t subs < <(cfg_list subreddits)
-  [[ ${#subs[@]} -gt 0 ]] || { log ERROR "no subreddits in $CFG"; exit 1; }
-
-  local t0 t1
-  t0="$(sec_now)"
-  log INFO "start ts=$(utc_now) task=pl-reddit-01 cfg=$CFG lookback_days=$lookback_days cutoff_iso=$cutoff_iso cutoff_key=${cutoff_key:-none} compression=$COMPRESSION"
-
-  local g_dirs_scan=0 g_dirs_skip=0 g_files_scan=0 g_write=0 g_skip_exist=0
-
-  for sub in "${subs[@]}"; do
-    log INFO "subreddit=$sub begin"
-
-    local raw_base="$ROOT_DIR/$RAW_ROOT/r_${sub}"
-    if [[ ! -d "$raw_base" ]]; then
-      log WARN "subreddit=$sub skip reason=no_raw_dir path=$raw_base"
-      continue
-    fi
-
-    local kind
-    for kind in submissions comments; do
-      local in_root="$raw_base/$kind"
-      if [[ ! -d "$in_root" ]]; then
-        log WARN "subreddit=$sub kind=$kind missing_dir path=$in_root"
-        continue
-      fi
-
-      local dir_scan=0 dir_skip=0 file_scan=0 wrote=0 skip_exist=0
-
-      while IFS= read -r d; do
-        dir_scan=$((dir_scan+1)); g_dirs_scan=$((g_dirs_scan+1))
-
-        local created_id created_key
-        created_id="$(basename "$d")"
-        created_key="${created_id%%_*}"
-
-        if [[ "$lookback_days" -gt 0 ]]; then
-          if [[ ${#created_key} -ne 12 || "$created_key" < "$cutoff_key" ]]; then
-            dir_skip=$((dir_skip+1)); g_dirs_skip=$((g_dirs_skip+1))
-            log INFO "subreddit=$sub kind=$kind action=skip scope=dir created_id=$created_id reason=prune created_key=$created_key cutoff_key=$cutoff_key"
-            continue
-          fi
-        fi
-
-        while IFS= read -r f; do
-          file_scan=$((file_scan+1)); g_files_scan=$((g_files_scan+1))
-
-          local base capture_ts hash out_dir out
-          base="$(basename "$f" .jsonl)"
-          capture_ts="${base%%_*}"
-          hash="${base#*_}"
-
-          out_dir="$ROOT_DIR/$PARQUET_ROOT/r_${sub}/${kind}/${created_id}"
-          out="$out_dir/${capture_ts}_${hash}.parquet"
-
-          if [[ -f "$out" ]]; then
-            skip_exist=$((skip_exist+1)); g_skip_exist=$((g_skip_exist+1))
-            log INFO "subreddit=$sub kind=$kind action=skip scope=file created_id=$created_id file=$(basename "$f") reason=exists out=$out"
-            continue
-          fi
-
-          mkdir -p "$out_dir"
-
-          local in_esc out_esc sid
-          in_esc="$(esc_sql "$f")"
-          out_esc="$(esc_sql "$out")"
-          sid="${created_id#*_}"
-
-          if [[ "$kind" == "submissions" ]]; then
-            duckdb :memory: -c "
-              COPY (
-                SELECT
-                  coalesce(author, '') AS author,
-                  '${sid}' AS submission_id,
-                  CAST(created_utc AS BIGINT) AS created_utc,
-                  CAST(epoch(strptime('${capture_ts}', '%y%m%d%H%M%S')) AS BIGINT) AS capture_utc,
-                  coalesce(title, '') AS title,
-                  coalesce(selftext, '') AS body
-                FROM read_json('${in_esc}', format='newline_delimited')
-                LIMIT 1
-              ) TO '${out_esc}' (FORMAT parquet, COMPRESSION '${COMPRESSION}');
-            " >/dev/null
-          else
-            duckdb :memory: -c "
-              COPY (
-                SELECT
-                  coalesce(author, '') AS author,
-                  '${sid}' AS submission_id,
-                  coalesce(id, '') AS comment_id,
-                  coalesce(parent_id, '') AS parent_id,
-                  CAST(created_utc AS BIGINT) AS created_utc,
-                  CAST(epoch(strptime('${capture_ts}', '%y%m%d%H%M%S')) AS BIGINT) AS capture_utc,
-                  coalesce(body, '') AS body
-                FROM read_json('${in_esc}', format='newline_delimited')
-                WHERE id IS NOT NULL
-              ) TO '${out_esc}' (FORMAT parquet, COMPRESSION '${COMPRESSION}');
-            " >/dev/null
-          fi
-
-          wrote=$((wrote+1)); g_write=$((g_write+1))
-          log INFO "subreddit=$sub kind=$kind action=write created_id=$created_id file=$(basename "$f") out=$out"
-        done < <(find "$d" -maxdepth 1 -type f -name '*.jsonl' | sort)
-      done < <(find "$in_root" -maxdepth 1 -mindepth 1 -type d | sort)
-
-      log INFO "subreddit=$sub kind=$kind stats dirs_scanned=$dir_scan dirs_skipped=$dir_skip files_scanned=$file_scan wrote=$wrote skip_exists=$skip_exist"
-    done
-
-    log INFO "subreddit=$sub end"
+iter_days() {
+  local n="$1" i=0
+  while [[ $i -le $n ]]; do
+    date -u -d "-${i} days" +%Y/%m%d
+    i=$((i+1))
   done
-
-  t1="$(sec_now)"
-  log INFO "done ts=$(utc_now) task=pl-reddit-01 elapsed=$((t1 - t0))s total_dirs_scanned=$g_dirs_scan total_dirs_skipped=$g_dirs_skip total_files_scanned=$g_files_scan total_wrote=$g_write total_skip_exists=$g_skip_exist"
 }
 
-main "$@"
+list_thread_dirs() {
+  local base="$1" lookback="$2"
+  if [[ "$lookback" -le 0 ]]; then
+    find "$base" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | sort
+    return 0
+  fi
+  while IFS= read -r ym; do
+    local y="${ym%/*}" md="${ym#*/}"
+    local day_dir="$base/$y/$md"
+    [[ -d "$day_dir" ]] || continue
+    find "$day_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort
+  done < <(iter_days "$lookback")
+}
+
+capture14() {
+  local cap12="$1"
+  duckdb :memory: -noheader -batch -c "
+    SELECT strftime(to_timestamp(epoch(strptime('${cap12}', '%y%m%d%H%M%S'))), '%Y%m%d%H%M%S');
+  " 2>/dev/null | tr -d '\r\n'
+}
+
+[[ -f "$CFG" ]] || { log_error "config not found: $CFG"; exit 1; }
+need_bin duckdb
+
+RAW_ROOT="$(yaml_get "$CFG" "raw_root")"
+PARQUET_ROOT="$(yaml_get "$CFG" "parquet_root")"
+COMPRESSION="$(yaml_get "$CFG" "compression")"
+LOOKBACK_DAYS="$(yaml_get "$CFG" "lookback_days")"
+
+RAW_ROOT="${RAW_ROOT:-data/reddit/00_raw}"
+PARQUET_ROOT="${PARQUET_ROOT:-data/reddit/01_parquet}"
+COMPRESSION="${COMPRESSION:-zstd}"
+LOOKBACK_DAYS="${LOOKBACK_DAYS:-0}"
+LOOKBACK_DAYS="${LOOKBACK_DAYS:-0}"
+[[ "$LOOKBACK_DAYS" =~ ^[0-9]+$ ]] || { log_error "bad lookback_days=$LOOKBACK_DAYS"; exit 1; }
+
+mapfile -t subs < <(yaml_list "$CFG" "subreddits")
+TOTAL="${#subs[@]}"
+[[ "$TOTAL" -gt 0 ]] || { log_error "no subreddits found in $CFG"; exit 1; }
+
+task_start "reddit:01_parquet"
+log_info "cfg=$CFG raw_root=$RAW_ROOT parquet_root=$PARQUET_ROOT lookback_days=$LOOKBACK_DAYS compression=$COMPRESSION subs=$TOTAL"
+
+g_threads=0
+g_files=0
+g_wrote=0
+g_skip=0
+
+for sub in "${subs[@]}"; do
+  log_info "subreddit=$sub begin"
+
+  base_raw="$ROOT_DIR/$RAW_ROOT/r_${sub}"
+  [[ -d "$base_raw" ]] || { log_warn "subreddit=$sub skip reason=no_raw_dir path=$base_raw"; continue; }
+
+  for kind in submissions comments; do
+    in_root="$base_raw/$kind"
+    [[ -d "$in_root" ]] || { log_warn "subreddit=$sub kind=$kind missing_dir path=$in_root"; continue; }
+
+    threads=0
+    files=0
+    wrote=0
+    skipped=0
+
+    while IFS= read -r td; do
+      [[ -d "$td" ]] || continue
+      threads=$((threads+1)); g_threads=$((g_threads+1))
+
+      thread="$(basename "$td")"
+      y="$(basename "$(dirname "$(dirname "$td")")")"
+      md="$(basename "$(dirname "$td")")"
+      hms="${thread%%_*}"
+      sid="${thread#*_}"
+      created_str="${y}${md}${hms}"
+
+      out_thread_dir="$ROOT_DIR/$PARQUET_ROOT/r_${sub}/${kind}/${y}/${md}/${thread}"
+
+      while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        files=$((files+1)); g_files=$((g_files+1))
+
+        base="$(basename "$f" .jsonl)"
+        capture_ts="${base%%_*}"
+        hash="${base#*_}"
+        capture_ts14="$(capture14 "$capture_ts")"
+        [[ -n "$capture_ts14" ]] || { log_error "subreddit=$sub kind=$kind action=fail reason=bad_capture_ts file=$(basename "$f")"; exit 1; }
+
+        out="$out_thread_dir/${capture_ts14}_${hash}.parquet"
+
+        if [[ -f "$out" ]]; then
+          skipped=$((skipped+1)); g_skip=$((g_skip+1))
+          log_info "subreddit=$sub kind=$kind action=skip scope=file thread=$y/$md/$thread file=$(basename "$f") reason=exists out=$out"
+          continue
+        fi
+
+        mkdir -p "$out_thread_dir"
+
+        in_esc="$(esc_sql "$f")"
+        out_esc="$(esc_sql "$out")"
+
+        if [[ "$kind" == "submissions" ]]; then
+          duckdb :memory: -c "
+            COPY (
+              SELECT
+                coalesce(author, '') AS author,
+                '${sid}' AS submission_id,
+                CAST(epoch(strptime('${created_str}', '%Y%m%d%H%M%S')) AS BIGINT) AS created_utc,
+                CAST(epoch(strptime('${capture_ts}', '%y%m%d%H%M%S')) AS BIGINT) AS capture_utc,
+                coalesce(title, '') AS title,
+                coalesce(selftext, '') AS body
+              FROM read_json('${in_esc}', format='newline_delimited')
+              LIMIT 1
+            ) TO '${out_esc}' (FORMAT parquet, COMPRESSION '${COMPRESSION}');
+          " >/dev/null
+        else
+          duckdb :memory: -c "
+            COPY (
+              SELECT
+                coalesce(author, '') AS author,
+                '${sid}' AS submission_id,
+                coalesce(id, '') AS comment_id,
+                coalesce(parent_id, '') AS parent_id,
+                CAST(created_utc AS BIGINT) AS created_utc,
+                CAST(epoch(strptime('${capture_ts}', '%y%m%d%H%M%S')) AS BIGINT) AS capture_utc,
+                coalesce(body, '') AS body
+              FROM read_json('${in_esc}', format='newline_delimited')
+              WHERE id IS NOT NULL
+            ) TO '${out_esc}' (FORMAT parquet, COMPRESSION '${COMPRESSION}');
+          " >/dev/null
+        fi
+
+        wrote=$((wrote+1)); g_wrote=$((g_wrote+1))
+        log_info "subreddit=$sub kind=$kind action=write thread=$y/$md/$thread file=$(basename "$f") out=$out"
+      done < <(find "$td" -maxdepth 1 -type f -name '*.jsonl' 2>/dev/null | sort)
+    done < <(list_thread_dirs "$in_root" "$LOOKBACK_DAYS")
+
+    log_info "subreddit=$sub kind=$kind stats threads=$threads files=$files wrote=$wrote skipped=$skipped"
+  done
+
+  log_info "subreddit=$sub end"
+done
+
+log_info "done totals threads=$g_threads files=$g_files wrote=$g_wrote skipped=$g_skip"
+task_end "reddit:01_parquet"
