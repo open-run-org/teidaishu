@@ -1,0 +1,82 @@
+FROM debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ENV JULIA_DEPOT_PATH=/opt/julia-depot
+ENV JULIA_PROJECT=@.
+ENV JULIA_NUM_THREADS=auto
+
+ENV GOPATH=/opt/go
+ENV GOMODCACHE=/opt/go/pkg/mod
+ENV GOCACHE=/opt/go/build-cache
+
+ENV UV_CACHE_DIR=/opt/uv-cache
+
+ENV PATH=/usr/local/go/bin:/usr/local/julia/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ARG GO_VERSION=1.25.5
+ARG JULIA_VERSION=1.12.2
+ARG ZOLA_VERSION=0.21.0
+ARG UV_VERSION=0.9.17
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash \
+  ca-certificates \
+  curl \
+  git \
+  jq \
+  just \
+  python3 \
+  python3-pip \
+  python3-venv \
+  tar \
+  unzip \
+  xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/julia-depot /opt/go/pkg/mod /opt/go/build-cache /opt/uv-cache && chmod -R 777 /opt/julia-depot /opt/go /opt/uv-cache
+
+RUN set -e; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) goarch="amd64" ;; \
+    arm64) goarch="arm64" ;; \
+    *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o /tmp/go.tgz; \
+  rm -rf /usr/local/go; \
+  tar -C /usr/local -xzf /tmp/go.tgz; \
+  rm -f /tmp/go.tgz
+
+RUN set -e; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) jdir="x64"; jfile="x86_64" ;; \
+    arm64) jdir="aarch64"; jfile="aarch64" ;; \
+    *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+  esac; \
+  minor="$(echo "${JULIA_VERSION}" | cut -d. -f1,2)"; \
+  curl -fsSL "https://julialang-s3.julialang.org/bin/linux/${jdir}/${minor}/julia-${JULIA_VERSION}-linux-${jfile}.tar.gz" -o /tmp/julia.tgz; \
+  rm -rf /usr/local/julia; \
+  mkdir -p /usr/local/julia; \
+  tar -C /usr/local/julia --strip-components=1 -xzf /tmp/julia.tgz; \
+  rm -f /tmp/julia.tgz; \
+  ln -sf /usr/local/julia/bin/julia /usr/local/bin/julia
+
+RUN set -e; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) zarch="x86_64" ;; \
+    arm64) zarch="aarch64" ;; \
+    *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-${zarch}-unknown-linux-gnu.tar.gz" -o /tmp/zola.tgz; \
+  tar -xzf /tmp/zola.tgz -C /usr/local/bin zola; \
+  rm -f /tmp/zola.tgz
+
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_UNMANAGED_INSTALL="/usr/local/bin" sh
+
+WORKDIR /workspace
+RUN git config --system --add safe.directory /workspace
+
+CMD ["bash","-lc","sleep infinity"]

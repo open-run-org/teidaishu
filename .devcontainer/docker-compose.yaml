@@ -1,0 +1,34 @@
+services:
+  open-run-teidaishu-dev:
+    image: ghcr.io/open-run-org/teidaishu-dev:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile.dev
+    container_name: open-run-teidaishu-dev
+    working_dir: /workspace
+    env_file:
+      - ../.env.dev
+    environment:
+      - JULIA_DEPOT_PATH=/opt/julia-depot
+      - JULIA_PROJECT=@.
+      - JULIA_NUM_THREADS=auto
+      - GOPATH=/opt/go
+      - GOMODCACHE=/opt/go/pkg/mod
+      - GOCACHE=/opt/go/build-cache
+      - UV_CACHE_DIR=/opt/uv-cache
+    volumes:
+      - "..:/workspace"
+      - "julia-depot:/opt/julia-depot"
+      - "go-modcache:/opt/go/pkg/mod"
+      - "go-build-cache:/opt/go/build-cache"
+      - "uv-cache:/opt/uv-cache"
+    command: >
+      bash -lc "
+        just init &&
+        exec sleep infinity
+      "
+volumes:
+  julia-depot:
+  go-modcache:
+  go-build-cache:
+  uv-cache:

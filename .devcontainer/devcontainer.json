@@ -1,0 +1,17 @@
+{
+  "dockerComposeFile": "docker-compose.yaml",
+  "service": "open-run-teidaishu-dev",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-python.python",
+        "julialang.language-julia",
+        "yzhang.markdown-all-in-one",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}
