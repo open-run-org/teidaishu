@@ -10,5 +10,9 @@
   "packageManager": "pnpm@10.26.0",
   "devDependencies": {
     "wrangler": "^4.55.0"
+  },
+  "dependencies": {
+    "discord-interactions": "^4.4.0",
+    "tweetnacl": "^1.0.3"
   }
 }

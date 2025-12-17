@@ -12,7 +12,7 @@ embed_batch_size: 20
 get_by_ids_batch_size: 256
 
 max_chars: 65536
-max_vectors_per_run: 1048576
+max_vectors_per_run: 10485760
 
 embed_sleep_ms: 1024
 embed_jitter_ms: 512

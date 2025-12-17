@@ -53,6 +53,9 @@ ask-rag QUERY:
       --max-output-tokens 4096 \
       "{{QUERY}}"
 
+worker-dev:
+    pnpm exec wrangler dev --cwd apps/teidaishu/worker
+
 worker-deploy:
     pnpm exec wrangler deploy --cwd apps/teidaishu/worker
 
