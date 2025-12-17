@@ -1,0 +1,7 @@
+parquet_root: data/reddit/01_parquet
+staged_root: data/reddit/02_staged
+
+lookback_days: 16
+
+subreddits:
+  - lowlevelaware

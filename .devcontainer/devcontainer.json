@@ -11,7 +11,8 @@
         "julialang.language-julia",
         "yzhang.markdown-all-in-one",
         "tamasfe.even-better-toml",
-        "redhat.vscode-yaml"
+        "redhat.vscode-yaml",
+        "dvirtz.parquet-viewer"
       ]
     }
   }

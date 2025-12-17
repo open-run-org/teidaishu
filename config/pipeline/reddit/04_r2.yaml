@@ -1,0 +1,17 @@
+staged_root: data/reddit/02_staged
+lookback_days: 0
+
+r2_bucket: open-run-teidaishu
+r2_prefix: reddit/v1
+
+max_chars: 65536
+max_objects_per_run: 0
+check_exists: true
+
+put_sleep_ms: 0
+put_jitter_ms: 0
+
+subreddits:
+  - BakaNewsJP
+  - ja
+  - lowlevelaware

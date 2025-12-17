@@ -1,5 +1,14 @@
+.pnpm-store
+.venv
+
+/apps/teidaishu/worker/.wrangler
+
 /data/import
 /data/reddit/00_raw
 /data/reddit/01_parquet
+/data/reddit/02_staged
+/data/reddit/03_index
+
+/node_modules
 
 .env.dev

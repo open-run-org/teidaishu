@@ -1,3 +1,3 @@
-module github.com/open-run-org/teidaishu/apps/reddit/harvest
+module open-run-teidaishu
 
 go 1.22

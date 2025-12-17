@@ -1,0 +1,28 @@
+staged_root: data/reddit/02_staged
+lookback_days: 0
+
+vectorize_index: open-run-teidaishu-reddit-ja
+vector_dim: 1536
+
+gemini_model: gemini-embedding-001
+embed_dim: 1536
+task_type: RETRIEVAL_DOCUMENT
+
+embed_batch_size: 20
+get_by_ids_batch_size: 256
+
+max_chars: 65536
+max_vectors_per_run: 10485760
+
+embed_sleep_ms: 1024
+embed_jitter_ms: 512
+
+embed_retry_max: 4
+embed_retry_backoff_ms: 1024
+
+on_embed_429: stop
+
+subreddits:
+  - BakaNewsJP
+  - ja
+  - lowlevelaware

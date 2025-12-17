@@ -1,7 +1,13 @@
 raw_root: data/reddit/00_raw
 parquet_root: data/reddit/01_parquet
+
+lookback_days: 16
+
+duckdb_threads: 16
+batch_size: 256
 compression: zstd
-file_size_bytes: 1048576
+
 subreddits:
   - BakaNewsJP
+  - ja
   - lowlevelaware

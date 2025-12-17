@@ -1,0 +1,5 @@
+boto3==1.42.10
+duckdb==1.4.3
+google-genai==1.33.0
+requests==2.32.4
+
