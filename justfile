@@ -62,6 +62,12 @@ worker-query q:
 worker-ask q:
     URL={{env_var_or_default("WORKER_URL","")}} bash scripts/tools/worker_ask.sh "{{q}}"
 
+worker-tail:
+    cd apps/teidaishu/worker && pnpm exec wrangler tail teidaishu-api --format pretty
+
+discord-cmds:
+    bash scripts/tools/discord_register_commands.sh
+
 pl-reddit:
     just pl-reddit-00 && \
     just pl-reddit-01 && \

@@ -1,3 +1,178 @@
+function hexToBytes(hex) {
+  hex = String(hex || "").trim();
+  if (!hex || (hex.length % 2) !== 0) return null;
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    const b = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    if (!Number.isFinite(b)) return null;
+    out[i] = b;
+  }
+  return out;
+}
+
+async function discordVerify(req, env, bodyText) {
+  const sigHex = req.headers.get("X-Signature-Ed25519") || "";
+  const ts = req.headers.get("X-Signature-Timestamp") || "";
+  const pubHex = env.DISCORD_PUBLIC_KEY || "";
+  const sig = hexToBytes(sigHex);
+  const pub = hexToBytes(pubHex);
+  if (!sig || !pub || !ts) return false;
+
+  const enc = new TextEncoder();
+  const msg = enc.encode(ts + bodyText);
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    pub,
+    { name: "NODE-ED25519" },
+    false,
+    ["verify"]
+  );
+
+  return await crypto.subtle.verify(
+    { name: "NODE-ED25519" },
+    key,
+    sig,
+    msg
+  );
+}
+
+function discordResp(obj) {
+  return new Response(JSON.stringify(obj), {
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+function optGet(options, name) {
+  if (!Array.isArray(options)) return null;
+  for (const o of options) {
+    if (o && o.name === name) return o.value;
+  }
+  return null;
+}
+
+async function discordEditOriginal(env, appId, token, content) {
+  content = String(content || "").trim();
+  if (!content) content = "（空）";
+  if (content.length > 1900) content = content.slice(0, 1900);
+
+  const url = `https://discord.com/api/v10/webhooks/${encodeURIComponent(appId)}/${encodeURIComponent(token)}/messages/@original`;
+  const r = await fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`discord_edit_http status=${r.status} body=${body}`);
+  }
+}
+
+async function handleDiscord(req, env, ctx) {
+  const bodyText = await req.text();
+
+  const ok = await discordVerify(req, env, bodyText);
+  if (!ok) return jerr(401, "bad_signature");
+
+  let it = null;
+  try {
+    it = JSON.parse(bodyText);
+  } catch {
+    return jerr(400, "bad_json");
+  }
+
+  if (it && it.type === 1) {
+    return discordResp({ type: 1 });
+  }
+
+  if (!it || it.type !== 2 || !it.data) {
+    return jerr(400, "bad_interaction");
+  }
+
+  const name = String(it.data.name || "").trim();
+  const options = it.data.options || [];
+  const appId = env.DISCORD_APP_ID || "";
+  const token = it.token || "";
+  if (!appId || !token) return jerr(500, "missing_discord_runtime");
+
+  if (name === "ask") {
+    const q = String(optGet(options, "q") || "").trim();
+    if (!q) return discordResp({ type: 4, data: { content: "missing q" } });
+
+    const topk = clampInt(optGet(options, "topk"), 1, 50, 25);
+    const max_docs = clampInt(optGet(options, "max_docs"), 1, 50, 8);
+    const ctx_max_chars = clampInt(optGet(options, "ctx_max_chars"), 1, 20000, 1200);
+    const temperature = Number.isFinite(Number(optGet(options, "temperature"))) ? Number(optGet(options, "temperature")) : 0.4;
+    const max_output_tokens = clampInt(optGet(options, "max_output_tokens"), 1, 8192, 800);
+    const dedup_sid = optGet(options, "dedup_sid");
+    const dedup = dedup_sid === null || dedup_sid === undefined ? true : !!dedup_sid;
+
+    ctx.waitUntil((async () => {
+      try {
+        const fake = new Request("http://local/ask", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            q,
+            topk,
+            max_docs,
+            ctx_max_chars,
+            temperature,
+            max_output_tokens,
+            dedup_sid: dedup,
+          }),
+        });
+        const r = await handleAsk(fake, env);
+        const j = await r.json().catch(() => null);
+        const ans = j && j.answer ? String(j.answer) : "";
+        await discordEditOriginal(env, appId, token, ans || "（回答生成失敗）");
+      } catch (e) {
+        await discordEditOriginal(env, appId, token, `error: ${String(e && e.message ? e.message : e)}`);
+      }
+    })());
+
+    return discordResp({ type: 5 });
+  }
+
+  if (name === "query") {
+    const q = String(optGet(options, "q") || "").trim();
+    if (!q) return discordResp({ type: 4, data: { content: "missing q" } });
+
+    const topk = clampInt(optGet(options, "topk"), 1, 50, 10);
+    const with_text = optGet(options, "with_text");
+    const withText = with_text === null || with_text === undefined ? true : !!with_text;
+    const max_chars = clampInt(optGet(options, "max_chars"), 1, 20000, 600);
+
+    ctx.waitUntil((async () => {
+      try {
+        const fake = new Request("http://local/query", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ q, topk, with_text: withText, max_chars }),
+        });
+        const r = await handleQuery(fake, env);
+        const j = await r.json().catch(() => null);
+        const results = (j && Array.isArray(j.results)) ? j.results : [];
+        let out = "";
+        for (let i = 0; i < Math.min(results.length, topk); i++) {
+          const it2 = results[i] || {};
+          const id = it2.id || "";
+          const score = it2.score || 0;
+          const text = it2.text ? String(it2.text).replace(/\s+/g, " ").slice(0, 120) : "";
+          out += `${i + 1}. score=${Number(score).toFixed(6)} id=${id}\n${text}\n\n`;
+        }
+        await discordEditOriginal(env, appId, token, out.trim() || "（結果なし）");
+      } catch (e) {
+        await discordEditOriginal(env, appId, token, `error: ${String(e && e.message ? e.message : e)}`);
+      }
+    })());
+
+    return discordResp({ type: 5 });
+  }
+
+  return discordResp({ type: 4, data: { content: `unknown command: ${name}` } });
+}
+
 function jerr(code, msg, extra) {
   return new Response(JSON.stringify({ ok: false, code, msg, ...extra }, null, 2), {
     status: code,
@@ -228,12 +403,13 @@ async function handleAsk(req, env) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     try {
       const url = new URL(req.url);
       if (url.pathname === "/health") return jok({ status: "ok" });
       if (url.pathname === "/query" && req.method === "POST") return await handleQuery(req, env);
       if (url.pathname === "/ask" && req.method === "POST") return await handleAsk(req, env);
+      if (url.pathname === "/discord" && req.method === "POST") return await handleDiscord(req, env, ctx);
       return jerr(404, "not_found");
     } catch (e) {
       return jerr(500, "internal_error", { err: String(e && e.message ? e.message : e) });
